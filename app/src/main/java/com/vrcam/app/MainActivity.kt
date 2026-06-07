@@ -16,7 +16,6 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.*
-import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.util.Consumer
@@ -39,22 +38,17 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         goFullscreen()
-
         cameraExecutor = Executors.newSingleThreadExecutor()
-
         if (allPermissionsGranted()) {
             startCamera()
         } else {
             ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, PERMISSION_REQUEST_CODE)
         }
-
         binding.btnRecord.setOnClickListener {
             if (isRecording) stopRecording() else startRecording()
         }
-
         binding.root.setOnClickListener {
             toggleButtonVisibility()
         }
@@ -64,39 +58,32 @@ class MainActivity : AppCompatActivity() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
+            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
-            // Left eye preview
-            val previewLeft = Preview.Builder().build()
-            previewLeft.setSurfaceProvider(binding.previewLeft.getSurfaceProvider())
-
-            // Right eye preview
-            val previewRight = Preview.Builder().build()
-            previewRight.setSurfaceProvider(binding.previewRight.getSurfaceProvider())
-
-            // Video recorder
             val recorder = Recorder.Builder()
                 .setQualitySelector(QualitySelector.from(Quality.HIGHEST))
                 .build()
             videoCapture = VideoCapture.withOutput(recorder)
 
-            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+            // Build both previews
+            val previewLeft = Preview.Builder().build()
+            val previewRight = Preview.Builder().build()
 
             try {
                 cameraProvider.unbindAll()
+                // Try binding both previews at once
                 cameraProvider.bindToLifecycle(
-                    this,
-                    cameraSelector,
-                    previewLeft,
-                    previewRight,
-                    videoCapture
+                    this, cameraSelector, previewLeft, previewRight, videoCapture
                 )
+                // Attach surfaces AFTER binding
+                previewLeft.setSurfaceProvider(binding.previewLeft.surfaceProvider)
+                previewRight.setSurfaceProvider(binding.previewRight.surfaceProvider)
+
             } catch (e: Exception) {
-                // Fallback — some devices don't support dual preview
-                // Use single preview and mirror it
+                // Fallback: single preview + mirror loop
                 try {
                     cameraProvider.unbindAll()
                     val singlePreview = Preview.Builder().build()
-                    singlePreview.setSurfaceProvider(binding.previewLeft.getSurfaceProvider())
                     val recorder2 = Recorder.Builder()
                         .setQualitySelector(QualitySelector.from(Quality.HIGHEST))
                         .build()
@@ -104,9 +91,10 @@ class MainActivity : AppCompatActivity() {
                     cameraProvider.bindToLifecycle(
                         this, cameraSelector, singlePreview, videoCapture
                     )
+                    singlePreview.setSurfaceProvider(binding.previewLeft.surfaceProvider)
                     startMirrorLoop()
                 } catch (e2: Exception) {
-                    Toast.makeText(this, "Camera error: ${e2.message}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Camera error!", Toast.LENGTH_SHORT).show()
                 }
             }
         }, ContextCompat.getMainExecutor(this))
@@ -128,7 +116,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun startRecording() {
         val vc = videoCapture ?: return
-        val name = SimpleDateFormat("yyyy-MM-dd-HH-mm-ss", Locale.US).format(System.currentTimeMillis())
+        val name = SimpleDateFormat("yyyy-MM-dd-HH-mm-ss", Locale.US)
+            .format(System.currentTimeMillis())
         val contentValues = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, "VRCam_$name")
             put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
@@ -153,11 +142,15 @@ class MainActivity : AppCompatActivity() {
                 when (event) {
                     is VideoRecordEvent.Start -> {
                         isRecording = true
-                        runOnUiThread { binding.btnRecord.setBackgroundResource(R.drawable.bg_btn_stop) }
+                        runOnUiThread {
+                            binding.btnRecord.setBackgroundResource(R.drawable.bg_btn_stop)
+                        }
                     }
                     is VideoRecordEvent.Finalize -> {
                         isRecording = false
-                        runOnUiThread { binding.btnRecord.setBackgroundResource(R.drawable.bg_btn_record) }
+                        runOnUiThread {
+                            binding.btnRecord.setBackgroundResource(R.drawable.bg_btn_record)
+                        }
                         if (!event.hasError()) {
                             Toast.makeText(this, "Video saved!", Toast.LENGTH_SHORT).show()
                         }
