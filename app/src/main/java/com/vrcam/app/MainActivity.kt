@@ -3,9 +3,13 @@ package com.vrcam.app
 import android.Manifest
 import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.graphics.Canvas
+import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.view.Surface
 import android.view.TextureView
@@ -36,9 +40,8 @@ class MainActivity : AppCompatActivity() {
     private var currentRecording: Recording? = null
     private var isRecording = false
     private var buttonVisible = true
-    private var sharedSurfaceTexture: SurfaceTexture? = null
-    private var leftSurface: Surface? = null
-    private var cameraStarted = false
+    private val handler = Handler(Looper.getMainLooper())
+    private var mirrorRunnable: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,7 +52,7 @@ class MainActivity : AppCompatActivity() {
         cameraExecutor = Executors.newSingleThreadExecutor()
 
         if (allPermissionsGranted()) {
-            setupTextureViews()
+            startCamera()
         } else {
             ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, PERMISSION_REQUEST_CODE)
         }
@@ -62,47 +65,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupTextureViews() {
-        binding.previewLeft.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                sharedSurfaceTexture = st
-                leftSurface = Surface(st)
-                tryAttachRightAndStart()
-            }
-            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
-            override fun onSurfaceTextureDestroyed(st: SurfaceTexture) = true
-            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
-        }
-
-        binding.previewRight.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                tryAttachRightAndStart()
-            }
-            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
-            override fun onSurfaceTextureDestroyed(st: SurfaceTexture) = false
-            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
-        }
-    }
-
-    private fun tryAttachRightAndStart() {
-        val st = sharedSurfaceTexture ?: return
-        if (!binding.previewRight.isAvailable) return
-        if (cameraStarted) return
-        cameraStarted = true
-
-        // Attach same SurfaceTexture to right view — zero lag mirror!
-        try {
-            binding.previewRight.surfaceTexture = st
-        } catch (e: Exception) {
-            // Some devices don't allow sharing — that's ok, left side still works
-        }
-
-        startCamera()
-    }
-
     private fun startCamera() {
-        val surface = leftSurface ?: return
-
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
@@ -114,19 +77,51 @@ class MainActivity : AppCompatActivity() {
             videoCapture = VideoCapture.withOutput(recorder)
 
             val preview = Preview.Builder().build()
-            preview.setSurfaceProvider { request ->
-                request.provideSurface(surface, cameraExecutor) {}
-            }
+            preview.setSurfaceProvider(binding.previewLeft.surfaceProvider)
 
             try {
                 cameraProvider.unbindAll()
                 cameraProvider.bindToLifecycle(
                     this, cameraSelector, preview, videoCapture
                 )
+                // Start high quality mirror after camera starts
+                handler.postDelayed({ startHighQualityMirror() }, 500)
             } catch (e: Exception) {
                 Toast.makeText(this, "Camera error!", Toast.LENGTH_SHORT).show()
             }
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    /**
+     * High quality mirror — runs at 60fps using hardware canvas.
+     * Much smoother than the 30fps bitmap copy approach.
+     */
+    private fun startHighQualityMirror() {
+        mirrorRunnable = object : Runnable {
+            override fun run() {
+                try {
+                    val bmp = binding.previewLeft.bitmap
+                    if (bmp != null && !bmp.isRecycled &&
+                        binding.previewRight.isAvailable) {
+                        val canvas: Canvas? = binding.previewRight.lockHardwareCanvas()
+                        if (canvas != null) {
+                            val src = Rect(0, 0, bmp.width, bmp.height)
+                            val dst = Rect(
+                                0, 0,
+                                binding.previewRight.width,
+                                binding.previewRight.height
+                            )
+                            canvas.drawBitmap(bmp, src, dst, null)
+                            binding.previewRight.unlockCanvasAndPost(canvas)
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Ignore frame errors silently
+                }
+                handler.postDelayed(this, 16) // 60fps
+            }
+        }
+        handler.post(mirrorRunnable!!)
     }
 
     private fun startRecording() {
@@ -218,7 +213,7 @@ class MainActivity : AppCompatActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == PERMISSION_REQUEST_CODE) {
-            if (allPermissionsGranted()) setupTextureViews()
+            if (allPermissionsGranted()) startCamera()
             else {
                 Toast.makeText(this, "Camera permission needed!", Toast.LENGTH_LONG).show()
                 finish()
@@ -233,9 +228,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        mirrorRunnable?.let { handler.removeCallbacks(it) }
         cameraExecutor.shutdown()
         currentRecording?.stop()
-        leftSurface?.release()
     }
 
     companion object {
