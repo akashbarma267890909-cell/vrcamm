@@ -5,14 +5,11 @@ import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Rect
-import android.graphics.SurfaceTexture
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
-import android.view.Surface
-import android.view.TextureView
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -84,41 +81,31 @@ class MainActivity : AppCompatActivity() {
                 cameraProvider.bindToLifecycle(
                     this, cameraSelector, preview, videoCapture
                 )
-                // Start high quality mirror after camera starts
-                handler.postDelayed({ startHighQualityMirror() }, 500)
+                handler.postDelayed({ startMirror() }, 500)
             } catch (e: Exception) {
                 Toast.makeText(this, "Camera error!", Toast.LENGTH_SHORT).show()
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
-    /**
-     * High quality mirror — runs at 60fps using hardware canvas.
-     * Much smoother than the 30fps bitmap copy approach.
-     */
-    private fun startHighQualityMirror() {
+    private fun startMirror() {
         mirrorRunnable = object : Runnable {
             override fun run() {
                 try {
                     val bmp = binding.previewLeft.bitmap
-                    if (bmp != null && !bmp.isRecycled &&
-                        binding.previewRight.isAvailable) {
-                        val canvas: Canvas? = binding.previewRight.lockHardwareCanvas()
+                    if (bmp != null && !bmp.isRecycled && binding.previewRight.isAvailable) {
+                        val canvas: Canvas? = binding.previewRight.lockCanvas(null)
                         if (canvas != null) {
                             val src = Rect(0, 0, bmp.width, bmp.height)
-                            val dst = Rect(
-                                0, 0,
+                            val dst = Rect(0, 0,
                                 binding.previewRight.width,
-                                binding.previewRight.height
-                            )
+                                binding.previewRight.height)
                             canvas.drawBitmap(bmp, src, dst, null)
                             binding.previewRight.unlockCanvasAndPost(canvas)
                         }
                     }
-                } catch (e: Exception) {
-                    // Ignore frame errors silently
-                }
-                handler.postDelayed(this, 16) // 60fps
+                } catch (e: Exception) {}
+                handler.postDelayed(this, 16)
             }
         }
         handler.post(mirrorRunnable!!)
