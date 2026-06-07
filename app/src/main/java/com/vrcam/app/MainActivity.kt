@@ -3,9 +3,14 @@ package com.vrcam.app
 import android.Manifest
 import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.graphics.SurfaceTexture
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
+import android.view.Surface
+import android.view.TextureView
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -33,6 +38,7 @@ class MainActivity : AppCompatActivity() {
     private var currentRecording: Recording? = null
     private var isRecording = false
     private var buttonVisible = true
+    private val handler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,6 +58,9 @@ class MainActivity : AppCompatActivity() {
         binding.root.setOnClickListener {
             toggleButtonVisibility()
         }
+
+        // Start mirror loop — copies left PreviewView bitmap to right TextureView
+        startMirrorLoop()
     }
 
     private fun startCamera() {
@@ -65,34 +74,47 @@ class MainActivity : AppCompatActivity() {
                 .build()
             videoCapture = VideoCapture.withOutput(recorder)
 
-            val previewLeft = Preview.Builder().build()
-            val previewRight = Preview.Builder().build()
+            val preview = Preview.Builder().build()
 
             try {
                 cameraProvider.unbindAll()
                 cameraProvider.bindToLifecycle(
-                    this, cameraSelector, previewLeft, previewRight, videoCapture
+                    this, cameraSelector, preview, videoCapture
                 )
-                previewLeft.setSurfaceProvider(binding.previewLeft.surfaceProvider)
-                previewRight.setSurfaceProvider(binding.previewRight.surfaceProvider)
+                preview.setSurfaceProvider(binding.previewLeft.surfaceProvider)
             } catch (e: Exception) {
-                // Fallback: bind just one preview
-                try {
-                    cameraProvider.unbindAll()
-                    val singlePreview = Preview.Builder().build()
-                    val recorder2 = Recorder.Builder()
-                        .setQualitySelector(QualitySelector.from(Quality.HIGHEST))
-                        .build()
-                    videoCapture = VideoCapture.withOutput(recorder2)
-                    cameraProvider.bindToLifecycle(
-                        this, cameraSelector, singlePreview, videoCapture
-                    )
-                    singlePreview.setSurfaceProvider(binding.previewLeft.surfaceProvider)
-                } catch (e2: Exception) {
-                    Toast.makeText(this, "Camera error!", Toast.LENGTH_SHORT).show()
-                }
+                Toast.makeText(this, "Camera error!", Toast.LENGTH_SHORT).show()
             }
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    // Mirrors left PreviewView to right TextureView at ~30fps
+    private fun startMirrorLoop() {
+        val runnable = object : Runnable {
+            override fun run() {
+                try {
+                    val bmp = binding.previewLeft.bitmap
+                    if (bmp != null && binding.previewRight.isAvailable) {
+                        val canvas = binding.previewRight.lockCanvas()
+                        if (canvas != null) {
+                            // Scale bitmap to fill the TextureView
+                            val src = android.graphics.Rect(0, 0, bmp.width, bmp.height)
+                            val dst = android.graphics.Rect(
+                                0, 0,
+                                binding.previewRight.width,
+                                binding.previewRight.height
+                            )
+                            canvas.drawBitmap(bmp, src, dst, null)
+                            binding.previewRight.unlockCanvasAndPost(canvas)
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Ignore frame errors
+                }
+                handler.postDelayed(this, 33) // ~30fps
+            }
+        }
+        handler.post(runnable)
     }
 
     private fun startRecording() {
@@ -199,6 +221,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        handler.removeCallbacksAndMessages(null)
         cameraExecutor.shutdown()
         currentRecording?.stop()
     }
