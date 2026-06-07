@@ -6,8 +6,6 @@ import android.content.pm.PackageManager
 import android.graphics.SurfaceTexture
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.provider.MediaStore
 import android.view.Surface
 import android.view.TextureView
@@ -19,6 +17,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
+import androidx.camera.core.SurfaceRequest
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.*
 import androidx.core.app.ActivityCompat
@@ -38,7 +37,10 @@ class MainActivity : AppCompatActivity() {
     private var currentRecording: Recording? = null
     private var isRecording = false
     private var buttonVisible = true
-    private val handler = Handler(Looper.getMainLooper())
+
+    // Shared SurfaceTexture — one camera feed drawn to both views simultaneously
+    private var sharedSurfaceTexture: SurfaceTexture? = null
+    private var leftSurface: Surface? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,74 +49,88 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         goFullscreen()
         cameraExecutor = Executors.newSingleThreadExecutor()
+
         if (allPermissionsGranted()) {
-            startCamera()
+            setupTextureViews()
         } else {
             ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, PERMISSION_REQUEST_CODE)
         }
+
         binding.btnRecord.setOnClickListener {
             if (isRecording) stopRecording() else startRecording()
         }
         binding.root.setOnClickListener {
             toggleButtonVisibility()
         }
+    }
 
-        // Start mirror loop — copies left PreviewView bitmap to right TextureView
-        startMirrorLoop()
+    /**
+     * Wait for both TextureViews to be ready, then start camera.
+     * Both TextureViews share the same SurfaceTexture so they show
+     * identical frames with zero lag between them.
+     */
+    private fun setupTextureViews() {
+        binding.previewLeft.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                sharedSurfaceTexture = st
+                leftSurface = Surface(st)
+
+                // Attach the same SurfaceTexture to the right view too
+                // This makes both views render the exact same frames simultaneously
+                if (binding.previewRight.isAvailable) {
+                    binding.previewRight.surfaceTexture = st
+                } else {
+                    binding.previewRight.surfaceTextureListener =
+                        object : TextureView.SurfaceTextureListener {
+                            override fun onSurfaceTextureAvailable(
+                                st2: SurfaceTexture, w: Int, h: Int
+                            ) {
+                                binding.previewRight.surfaceTexture = sharedSurfaceTexture
+                                startCamera()
+                            }
+                            override fun onSurfaceTextureSizeChanged(
+                                st: SurfaceTexture, w: Int, h: Int) {}
+                            override fun onSurfaceTextureDestroyed(st: SurfaceTexture) = false
+                            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+                        }
+                }
+                startCamera()
+            }
+            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+            override fun onSurfaceTextureDestroyed(st: SurfaceTexture) = true
+            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+        }
     }
 
     private fun startCamera() {
+        val surface = leftSurface ?: return
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
+            // Video capture
             val recorder = Recorder.Builder()
                 .setQualitySelector(QualitySelector.from(Quality.HIGHEST))
                 .build()
             videoCapture = VideoCapture.withOutput(recorder)
 
+            // Preview using our shared surface directly
             val preview = Preview.Builder().build()
+            preview.setSurfaceProvider { request ->
+                request.provideSurface(surface, cameraExecutor) {}
+            }
 
             try {
                 cameraProvider.unbindAll()
                 cameraProvider.bindToLifecycle(
                     this, cameraSelector, preview, videoCapture
                 )
-                preview.setSurfaceProvider(binding.previewLeft.surfaceProvider)
             } catch (e: Exception) {
-                Toast.makeText(this, "Camera error!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Camera error: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }, ContextCompat.getMainExecutor(this))
-    }
-
-    // Mirrors left PreviewView to right TextureView at ~30fps
-    private fun startMirrorLoop() {
-        val runnable = object : Runnable {
-            override fun run() {
-                try {
-                    val bmp = binding.previewLeft.bitmap
-                    if (bmp != null && binding.previewRight.isAvailable) {
-                        val canvas = binding.previewRight.lockCanvas()
-                        if (canvas != null) {
-                            // Scale bitmap to fill the TextureView
-                            val src = android.graphics.Rect(0, 0, bmp.width, bmp.height)
-                            val dst = android.graphics.Rect(
-                                0, 0,
-                                binding.previewRight.width,
-                                binding.previewRight.height
-                            )
-                            canvas.drawBitmap(bmp, src, dst, null)
-                            binding.previewRight.unlockCanvasAndPost(canvas)
-                        }
-                    }
-                } catch (e: Exception) {
-                    // Ignore frame errors
-                }
-                handler.postDelayed(this, 33) // ~30fps
-            }
-        }
-        handler.post(runnable)
     }
 
     private fun startRecording() {
@@ -206,7 +222,7 @@ class MainActivity : AppCompatActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == PERMISSION_REQUEST_CODE) {
-            if (allPermissionsGranted()) startCamera()
+            if (allPermissionsGranted()) setupTextureViews()
             else {
                 Toast.makeText(this, "Camera permission needed!", Toast.LENGTH_LONG).show()
                 finish()
@@ -221,9 +237,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        handler.removeCallbacksAndMessages(null)
         cameraExecutor.shutdown()
         currentRecording?.stop()
+        leftSurface?.release()
     }
 
     companion object {
