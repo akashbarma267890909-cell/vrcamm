@@ -76,6 +76,7 @@ class MainActivity : AppCompatActivity() {
                 previewLeft.setSurfaceProvider(binding.previewLeft.surfaceProvider)
                 previewRight.setSurfaceProvider(binding.previewRight.surfaceProvider)
             } catch (e: Exception) {
+                // Fallback: bind just one preview
                 try {
                     cameraProvider.unbindAll()
                     val singlePreview = Preview.Builder().build()
@@ -87,26 +88,11 @@ class MainActivity : AppCompatActivity() {
                         this, cameraSelector, singlePreview, videoCapture
                     )
                     singlePreview.setSurfaceProvider(binding.previewLeft.surfaceProvider)
-                    startMirrorLoop()
                 } catch (e2: Exception) {
                     Toast.makeText(this, "Camera error!", Toast.LENGTH_SHORT).show()
                 }
             }
         }, ContextCompat.getMainExecutor(this))
-    }
-
-    private fun startMirrorLoop() {
-        val handler = android.os.Handler(mainLooper)
-        val runnable = object : Runnable {
-            override fun run() {
-                try {
-                    val bmp = binding.previewLeft.bitmap
-                    if (bmp != null) binding.previewRight.setImageBitmap(bmp)
-                } catch (e: Exception) {}
-                handler.postDelayed(this, 33)
-            }
-        }
-        handler.post(runnable)
     }
 
     private fun startRecording() {
