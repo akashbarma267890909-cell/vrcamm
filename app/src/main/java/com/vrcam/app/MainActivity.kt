@@ -17,7 +17,6 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
-import androidx.camera.core.SurfaceRequest
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.*
 import androidx.core.app.ActivityCompat
@@ -37,10 +36,9 @@ class MainActivity : AppCompatActivity() {
     private var currentRecording: Recording? = null
     private var isRecording = false
     private var buttonVisible = true
-
-    // Shared SurfaceTexture — one camera feed drawn to both views simultaneously
     private var sharedSurfaceTexture: SurfaceTexture? = null
     private var leftSurface: Surface? = null
+    private var cameraStarted = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,59 +62,57 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Wait for both TextureViews to be ready, then start camera.
-     * Both TextureViews share the same SurfaceTexture so they show
-     * identical frames with zero lag between them.
-     */
     private fun setupTextureViews() {
         binding.previewLeft.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
                 sharedSurfaceTexture = st
                 leftSurface = Surface(st)
-
-                // Attach the same SurfaceTexture to the right view too
-                // This makes both views render the exact same frames simultaneously
-                if (binding.previewRight.isAvailable) {
-                    binding.previewRight.surfaceTexture = st
-                } else {
-                    binding.previewRight.surfaceTextureListener =
-                        object : TextureView.SurfaceTextureListener {
-                            override fun onSurfaceTextureAvailable(
-                                st2: SurfaceTexture, w: Int, h: Int
-                            ) {
-                                binding.previewRight.surfaceTexture = sharedSurfaceTexture
-                                startCamera()
-                            }
-                            override fun onSurfaceTextureSizeChanged(
-                                st: SurfaceTexture, w: Int, h: Int) {}
-                            override fun onSurfaceTextureDestroyed(st: SurfaceTexture) = false
-                            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
-                        }
-                }
-                startCamera()
+                tryAttachRightAndStart()
             }
             override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
             override fun onSurfaceTextureDestroyed(st: SurfaceTexture) = true
             override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
         }
+
+        binding.previewRight.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                tryAttachRightAndStart()
+            }
+            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+            override fun onSurfaceTextureDestroyed(st: SurfaceTexture) = false
+            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+        }
+    }
+
+    private fun tryAttachRightAndStart() {
+        val st = sharedSurfaceTexture ?: return
+        if (!binding.previewRight.isAvailable) return
+        if (cameraStarted) return
+        cameraStarted = true
+
+        // Attach same SurfaceTexture to right view — zero lag mirror!
+        try {
+            binding.previewRight.surfaceTexture = st
+        } catch (e: Exception) {
+            // Some devices don't allow sharing — that's ok, left side still works
+        }
+
+        startCamera()
     }
 
     private fun startCamera() {
         val surface = leftSurface ?: return
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
 
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
-            // Video capture
             val recorder = Recorder.Builder()
                 .setQualitySelector(QualitySelector.from(Quality.HIGHEST))
                 .build()
             videoCapture = VideoCapture.withOutput(recorder)
 
-            // Preview using our shared surface directly
             val preview = Preview.Builder().build()
             preview.setSurfaceProvider { request ->
                 request.provideSurface(surface, cameraExecutor) {}
@@ -128,7 +124,7 @@ class MainActivity : AppCompatActivity() {
                     this, cameraSelector, preview, videoCapture
                 )
             } catch (e: Exception) {
-                Toast.makeText(this, "Camera error: ${e.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Camera error!", Toast.LENGTH_SHORT).show()
             }
         }, ContextCompat.getMainExecutor(this))
     }
