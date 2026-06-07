@@ -1,0 +1,2 @@
+-keep class com.vrcam.app.** { *; }
+-keep class androidx.camera.** { *; }
