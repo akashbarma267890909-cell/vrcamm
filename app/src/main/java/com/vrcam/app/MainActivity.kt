@@ -65,22 +65,17 @@ class MainActivity : AppCompatActivity() {
                 .build()
             videoCapture = VideoCapture.withOutput(recorder)
 
-            // Build both previews
             val previewLeft = Preview.Builder().build()
             val previewRight = Preview.Builder().build()
 
             try {
                 cameraProvider.unbindAll()
-                // Try binding both previews at once
                 cameraProvider.bindToLifecycle(
                     this, cameraSelector, previewLeft, previewRight, videoCapture
                 )
-                // Attach surfaces AFTER binding
                 previewLeft.setSurfaceProvider(binding.previewLeft.surfaceProvider)
                 previewRight.setSurfaceProvider(binding.previewRight.surfaceProvider)
-
             } catch (e: Exception) {
-                // Fallback: single preview + mirror loop
                 try {
                     cameraProvider.unbindAll()
                     val singlePreview = Preview.Builder().build()
